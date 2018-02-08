@@ -2,29 +2,41 @@ package com.camunda.demo.environment.simulation;
 
 import static org.camunda.bpm.engine.test.assertions.ProcessEngineAssertions.init;
 import static org.camunda.bpm.engine.test.assertions.ProcessEngineAssertions.processEngine;
+import static org.camunda.bpm.engine.test.assertions.ProcessEngineTests.historyService;
 import static org.camunda.bpm.engine.test.assertions.ProcessEngineTests.repositoryService;
 import static org.camunda.bpm.engine.test.assertions.ProcessEngineTests.runtimeService;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import org.camunda.bpm.engine.history.HistoricProcessInstance;
 import org.camunda.bpm.engine.history.HistoricProcessInstanceQuery;
+import org.camunda.bpm.engine.history.HistoricVariableInstance;
 import org.camunda.bpm.engine.repository.ProcessDefinition;
 import org.camunda.bpm.engine.repository.ProcessDefinitionQuery;
 import org.camunda.bpm.engine.test.Deployment;
 import org.camunda.bpm.engine.test.ProcessEngineRule;
+import org.camunda.bpm.engine.variable.value.TypedValue;
 import org.camunda.bpm.model.bpmn.Bpmn;
 import org.camunda.bpm.model.bpmn.BpmnModelInstance;
+import org.camunda.bpm.model.bpmn.builder.EndEventBuilder;
+import org.camunda.bpm.model.bpmn.impl.instance.camunda.CamundaPropertiesImpl;
 import org.camunda.bpm.model.bpmn.instance.BpmnModelElementInstance;
 import org.camunda.bpm.model.bpmn.instance.Definitions;
+import org.camunda.bpm.model.bpmn.instance.Extension;
 import org.camunda.bpm.model.bpmn.instance.FlowNode;
+import org.camunda.bpm.model.bpmn.instance.Process;
 import org.camunda.bpm.model.bpmn.instance.SequenceFlow;
 import org.camunda.bpm.model.bpmn.instance.ServiceTask;
 import org.camunda.bpm.model.bpmn.instance.StartEvent;
+import org.camunda.bpm.model.bpmn.instance.camunda.CamundaProperties;
 import org.camunda.bpm.model.xml.instance.ModelElementInstance;
 import org.junit.Before;
 import org.junit.Rule;
@@ -55,7 +67,7 @@ public class DemoDataGeneratorTest {
   public void setup() {
     init(rule.getProcessEngine());
   }
-
+  
   @Test
   @Deployment(resources = "simulate.bpmn")
   public void testSimulationDrive() {
@@ -66,13 +78,95 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(6000.0, 100.0); // every 6000 seconds
-    generator.generateData();
+    generator.run();
 
     // ProcessInstance pi =
     // runtimeService().startProcessInstanceByKey("simulate");
     // assertThat(pi).task();
     // complete(task());
     // assertThat(pi).isEnded();
+  }
+
+  @Test
+  @Deployment(resources = "setVariable.bpmn")
+  public void testSetVariable() {
+    TimeAwareDemoGenerator generator = new TimeAwareDemoGenerator(processEngine()) //
+        .processDefinitionKey("setVariable") //
+        .numberOfDaysInPast(1) //
+        .startTimeBusinessDay("00:00") //
+        .endTimeBusinessDay("23:00") //
+        .includeWeekend(true) //
+        .timeBetweenStartsBusinessDays(864.0, 0.0);
+    generator.run();
+
+    List<HistoricProcessInstance> finished = processEngine().getHistoryService().createHistoricProcessInstanceQuery().finished()
+        .processDefinitionKey("setVariable").list();
+
+    Set<String> uniqueCheck = new HashSet<>();
+    long countMale = 0;
+    long countFemale = 0;
+
+    for (HistoricProcessInstance pi : finished) {
+      List<HistoricVariableInstance> vars = historyService().createHistoricVariableInstanceQuery().processInstanceId(pi.getId()).list();
+      int found = 0;
+      for (HistoricVariableInstance vi : vars) {
+        if ("third".equals(vi.getName())) {
+          assertEquals("Hello lovely world", vi.getValue());
+          found++;
+        }
+        if ("dto".equals(vi.getName())) {
+          SampleDTO dto = (SampleDTO) vi.getValue();
+
+          assert (!uniqueCheck.contains(dto.getUuid()));
+          uniqueCheck.add(dto.getUuid());
+
+          assert (dto.getPerson().getSex().equals("male") || dto.getPerson().getSex().equals("female"));
+          if (dto.getPerson().getSex().equals("male"))
+            countMale++;
+          if (dto.getPerson().getSex().equals("female"))
+            countFemale++;
+
+          found++;
+
+          System.out.println(dto);
+        }
+      }
+      assertEquals(2, found);
+    }
+
+    // even distribution from uniformFromArgs2 ?
+    assert ((double) countMale / (countMale + countFemale) > 0.4);
+    assert ((double) countMale / (countMale + countFemale) < 0.6);
+  }
+
+  @Test
+  @Deployment(resources = "keepImplementation.bpmn")
+  public void testKeepImplementation() {
+    TimeAwareDemoGenerator generator = new TimeAwareDemoGenerator(processEngine()) //
+        .processDefinitionKey("keepImplementation") //
+        .numberOfDaysInPast(1) //
+        .startTimeBusinessDay("00:00") //
+        .endTimeBusinessDay("23:59") //
+        .includeWeekend(true) //
+        .timeBetweenStartsBusinessDays(864.0, 0.0);
+    generator.run();
+
+    long runned = processEngine().getHistoryService().createHistoricProcessInstanceQuery().finished().processDefinitionKey("keepImplementation").count();
+    long never = processEngine().getHistoryService().createHistoricActivityInstanceQuery()
+        .processDefinitionId(getProcessDefinitionIdByKey("keepImplementation")).activityId("EndEvent_Never").count();
+    double fifty1 = processEngine().getHistoryService().createHistoricActivityInstanceQuery()
+        .processDefinitionId(getProcessDefinitionIdByKey("keepImplementation")).activityId("EndEvent_Fifty1").count();
+    double fifty2 = processEngine().getHistoryService().createHistoricActivityInstanceQuery()
+        .processDefinitionId(getProcessDefinitionIdByKey("keepImplementation")).activityId("EndEvent_Fifty2").count();
+
+    assertEquals(101, runned);
+    assertEquals(0, never);
+    assert (fifty1 / fifty2 > 0.4);
+    assert (fifty2 / fifty1 > 0.4);
+    assertEquals(0, new TestDelegate1().count());
+    assertEquals(0, TestBalloon.getCounter("no"));
+    assertEquals(3 * runned, new TestDelegate2().count());
+    assertEquals(3 * runned, TestBalloon.getCounter("yes"));
   }
 
   @Test
@@ -85,7 +179,7 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(3600.0, 0.0);
-    generator.generateData();
+    generator.run();
 
     long epsilon = 1;
 
@@ -107,7 +201,7 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(600.0, 100.0);
-    generator.generateData();
+    generator.run();
 
     long runned = processEngine().getHistoryService().createHistoricProcessInstanceQuery().finished().processDefinitionKey("externalTask").count();
     // we have at least every 740 seconds a finish and run at least 24h
@@ -124,7 +218,7 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(600.0, 100.0);
-    generator.generateData();
+    generator.run();
 
     long runned = processEngine().getHistoryService().createHistoricProcessInstanceQuery().finished().processDefinitionKey("boundaryMessage").count();
 
@@ -153,7 +247,7 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(6000.0, 100.0);
-    generator.generateData();
+    generator.run();
 
     long taken = processEngine().getHistoryService().createHistoricActivityInstanceQuery()
         .processDefinitionId(getProcessDefinitionIdByKey("cycleBoundaryTimer")).activityId("EndEvent_Taken").count();
@@ -184,7 +278,7 @@ public class DemoDataGeneratorTest {
         .endTimeBusinessDay("23:59") //
         .includeWeekend(true) //
         .timeBetweenStartsBusinessDays(6000.0, 100.0);
-    generator.generateData();
+    generator.run();
 
     long taken = processEngine().getHistoryService().createHistoricActivityInstanceQuery()
         .processDefinitionId(getProcessDefinitionIdByKey("repeatCallActivitySub")).activityId("EndEvent_SubTaken").count();
@@ -251,7 +345,7 @@ public class DemoDataGeneratorTest {
         .processDefinitionKey("insurance-application") //
         .numberOfDaysInPast(2) //
         .timeBetweenStartsBusinessDays(6000.0, 100.0); // every 6000 seconds
-    generator.generateData();
+    generator.run();
 
     // everything should be finished as case instance gets completed
     assertEquals(0, processEngine().getRuntimeService().createProcessInstanceQuery().processDefinitionKey("insurance-application").count());
